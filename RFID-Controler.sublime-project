@@ -1,0 +1,45 @@
+{
+	"folders":
+	[
+		{
+			"path": ".",
+			"folder_exclude_patterns": [],
+			"follow_symlinks": true,
+		},
+		{
+			"path": "../libs",
+			"folder_exclude_patterns": [],
+			"follow_symlinks": true,
+		},
+		{
+			"path": "../include",
+			"folder_exclude_patterns": [],
+			"follow_symlinks": true,
+		},
+
+	],
+	"settings":
+	{
+		"tab_size": 8,
+	},
+	"build_systems":
+	[
+		{
+			"name": "RPi-C++",
+			"shell_cmd": "make.exe",
+			"working_dir": "${project_path}",
+			"file_regex": "^[.\\\\/]*([a-z]?:?[\\w.\\\\/]+)[(:]([0-9]+)[,:]?([0-9]+)?[)]?:(.*)$",
+			"variants":
+			[
+				{
+					"name": "Rebuild",
+        				"shell_cmd": "make.exe mrproper all",
+    				},
+    				{
+					"name": "Clean",
+        				"shell_cmd": "make.exe mrproper",
+    				},
+    			]
+		}
+	]
+}
