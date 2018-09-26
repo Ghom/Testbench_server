@@ -1,6 +1,6 @@
 #!/bin/bash
 
-LOGFILE=.server/server_log.txt
+LOGFILE=~/testbench/.server/server_log.txt
 
 sudo killall testbench_server > /dev/null 2>&1
 
@@ -8,4 +8,4 @@ echo "" >> ${LOGFILE}
 echo "" >> ${LOGFILE}
 echo "" >> ${LOGFILE}
 echo "########################### SESSION STARTED ##############################" >> ${LOGFILE}
-sudo nohup .server/testbench_server >> ${LOGFILE} 2>&1 &
+sudo nohup ~/testbench/.server/testbench_server >> ${LOGFILE} 2>&1 &
