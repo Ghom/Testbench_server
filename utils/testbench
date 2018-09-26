@@ -1,0 +1,518 @@
+#!/usr/bin/python3
+import socket
+import sys
+import time
+import os.path
+import shutil
+from pathlib import Path
+import csv
+import datetime
+import select
+from collections import OrderedDict
+
+HEADER_DICT = OrderedDict()
+HEADER_DICT["Motor Speed(rpm)"]    = ["speed", 100]
+HEADER_DICT["Measure Time(sec)"]   = ["duration", 60] 
+HEADER_DICT["Measure Rep"]         = ["repetition", 1]
+HEADER_DICT["RFID Power(dbm)"]     = ["power", 13]
+HEADER_DICT["Modulation"]          = ["modulation", "pr-ask"]
+HEADER_DICT["RssiThreshold(dbm)"]  = ["rssi", -40]
+
+CSV_DELIMITER = ';'
+CSVIN_HEADER = CSV_DELIMITER.join(list(HEADER_DICT.keys())+['\n'])
+CSVIN_EXEMPLE = CSV_DELIMITER.join([str(value[1]) for value in HEADER_DICT.values()]+['\n'])
+CSV_EXEMPLE_FILE = "exemple-csv-in.csv"
+TMP_DIR = ".tmp"
+
+HOST = '127.0.0.1'
+PORT = 12345
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+connected = False
+
+#typedef enum {CMD_RFID=0, CMD_MOTOR, INFO_RFID, INFO_MOTOR} packet_type;
+CMD_RFID = 0x00
+CMD_MOTOR = 0x01
+INFO_RFID = 0x02
+INFO_MOTOR = 0x03
+RFID_DIRECT = 0x04
+
+#typedef enum {CMD_CHANGE_SPEED=0, CMD_GET_SPEED, CMD_SIGNAL_STABLE_SPEED} motor_cmd_type_t;
+CMD_SIGNAL_STABLE_SPEED = 0x02
+
+
+ST_COM_WRITE_REG = 0x68
+ST_COM_READ_REG = 0x69
+CMD_TAG_DETECTED = 0x16
+
+CMD_CHANGE_FREQ = 0x02
+SUBCMD_CHANGE_FREQ_SETLBT = 0x07
+SUBCMD_CHANGE_FREQ_GETLBT = 0x08
+
+def getShortParam(longParamStr):
+    return HEADER_DICT[longParamStr][0]
+
+def csv_parser(csvPath):
+    with open(csvPath, 'r') as csvF:
+        rd = csv.DictReader(csvF, delimiter=CSV_DELIMITER)
+        paramlist = CSVIN_HEADER[:-1].split(CSV_DELIMITER)
+        line = 0
+        skiped = 0
+        testlist = []
+        for row in rd:
+            line += 1
+            try:
+                d = dict()
+                d['testnum'] = line
+                speed = int(row[paramlist[0]])
+                if not (100 <= speed <= 500) and (speed != 0): 
+                    print("Warning: {}:{} the field '{}' need to be in range [100:500] rpm or 0 rpm ({}) -- skip test".format(csvPath, line, paramlist[0], int(row[paramlist[0]])))
+                    skiped += 1
+                    continue
+                d['speed'] = speed
+
+                duration = int(row[paramlist[1]])
+                if duration < 0: 
+                    print("Warning: {}:{} the field '{}' need to be a positive integer ({}) -- skip test".format(csvPath, line, paramlist[1], int(row[paramlist[1]])))
+                    skiped += 1
+                    continue
+                d['duration'] = duration
+                
+                repetition = int(row[paramlist[2]])
+                if not (repetition >= 1): 
+                    print("Warning: {}:{} the field '{}' at least equal to 1 ({}) -- skip test".format(csvPath, line, paramlist[2], int(row[paramlist[2]])))
+                    skiped += 1
+                    continue
+                d['repetition'] = repetition
+
+                power = int(row[paramlist[3]])
+                if not (1 <= power <= 20):
+                    print("Warning: {}:{} the field '{}' need to be in range [1:20] dbm ({}) -- skip test".format(csvPath, line, paramlist[3], int(row[paramlist[3]])))
+                    skiped += 1
+                    continue
+                d['power'] = power          
+                
+                modulation = row[paramlist[4]]
+                if modulation != "pr-ask" and modulation != "ask":
+                    print("Warning: {}:{} the field '{}' need to either be 'ask' or 'pr-ask' (case sensitive) ({}) -- skip test".format(csvPath, line, paramlist[4], row[paramlist[4]]))
+                    skiped += 1
+                    continue
+                d['modulation'] = modulation
+
+                rssi = int(row[paramlist[5]])
+                if not (-80 <= rssi <= -40):
+                    print("Warning: {}:{} the field '{}' need to be in range [-80:-40] dbm ({}) -- skip test".format(csvPath, line, paramlist[5], int(row[paramlist[5]])))
+                    skiped += 1
+                    continue
+                d['rssi'] = rssi
+
+                testlist.append(d)
+            except ValueError:
+                print("Warning: {}:{} contain a field that is not a number -- skip test".format(csvPath, line))
+                skiped += 1
+                continue
+        
+        if(skiped):
+            print("{}/{} will be skiped. do you still want to proceed? (Yes/n)".format(skiped, line))
+            if input() != "Yes":
+                exit()
+
+        return testlist
+
+# Write the result to the output csv file
+def write_result(csvPath, result):
+    pass
+
+# Connect to the testbench server
+def connect(addr, port):
+    try:
+        server.connect((addr, port))
+        server.setblocking(0)
+        print('Connexion vers ' + addr + ':' + str(port) + ' reussie.')
+        connected = True
+    except ConnectionRefusedError:
+        print("Error: Could not connect to {}:{}. Make sure the server is started".format(addr, port))
+        exit()
+
+# Disconnect from the testbench server
+def disconnect():
+    global connected
+    print ('Deconnexion.')
+    if(connected):
+        server.close()
+        connected = False
+
+# Handle exiting potentially in the middle of a test, the scan, motor and server connection need to be stoped if possible
+def cleanExit():
+    disconnect()
+    exit()
+
+# Get the following incoming cmd on the network
+def get_cmd(): 
+    cmd_detected = False
+    timeout = False
+    cmd_size = -1
+    cmd_type = -1
+    magic = 0
+    magic_detected = False
+    frame = []
+    cmd = dict()
+    while not cmd_detected:
+        ready = select.select([server], [], [], 0.5)
+        if ready[0]:
+            byte = server.recv(1)
+
+            value = int(byte[0])
+            #print('value:{}'.format(hex(byte[0])))
+            magic = ((magic>>8) | value<<24) & 0xFFFFFFFF
+            #print('magic is {}'.format(hex(magic)))
+            if(magic == 0x41421356):
+                magic_detected=True
+                continue
+            
+            if(magic_detected):
+                #print('value:{}'.format(hex(value)))
+                frame.append(value)
+
+            if(len(frame) == 3):
+                cmd_type = frame[0]
+                cmd_size = (frame[1] | frame[2]<<8) & 0xFFFF
+                cmd["type"] = cmd_type
+                cmd["size"] = cmd_size
+                #print("size: " + str(cmd_size))
+            elif(len(frame) > 3):
+                cmd_size -=1
+                if(cmd_size == 0):
+                    cmd_detected = True
+        else:
+            #print("timeout")
+            timeout = True
+            return -1
+
+    #print("Command detected: {}".format(frame))
+    cmd["data"] = frame[3:]
+    
+    return cmd
+# Send the command to change the motor speed and wait until the speed as been reached
+def motor_speed(speed):
+    clockwise = 1
+    if(speed<0):
+        speed = abs(speed)
+        clockwise = 0
+
+    #                       MAGIC                       type    size        type    argc    arg[...]
+    command_motor = bytes([ 0x41, 0x42, 0x13, 0x56,     1,      0, 5,       0,      3,      speed>>8, speed&0xFF, clockwise])
+
+    n = server.send(command_motor)
+    if (n != len(command_motor)):
+        print ('Erreur envoi.')
+        cleanExit()
+
+    stabelised = False
+    while(not stabelised):
+        cmd = get_cmd()
+        if(cmd != -1 and cmd["type"] == INFO_MOTOR and cmd["data"][0] == CMD_SIGNAL_STABLE_SPEED):
+            stabelised = True
+
+def dbm_to_reg(dbm):
+    value = 0
+    if(dbm >= 9):
+        value = 20-dbm
+    elif(dbm < 9):
+        value = 0x10 + (8-dbm)
+
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x00;    //   0dB,  20dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x07;    //  -7dB,  13dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x08;    //  -8dB,  12dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x09;    //  -9dB,  11dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x0A;    // -10dB,  10dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x0B;    // -11dB,   9dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x10;    // -12dB,   8dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x11;    // -13dB,   7dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x12;    // -14dB,   6dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x13;    // -15dB,   5dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x14;    // -16dB,   4dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x15;    // -17dB,   3dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x16;    // -18dB,   2dBm
+    #define ST25RU3993_REG_MODULATORCONTROL3_VALUE     0x17;    // -19dB,   1dBm
+    return value
+
+def send_data(data):
+    n = server.send(bytes(data))
+    if (n != len(data)):
+        print ('Erreur envoi.')
+
+# Send command to RFID board 
+def rfid_set(param, value):
+    command = []
+    if(param == "scan"):    
+        #            MAGIC                       type    size        type    argc    arg[...]
+        command = [  0x41, 0x42, 0x13, 0x56,     0,      0, 3,       0x17,   1,      0]
+        if(value):
+            #print("Start scan")
+            command[9] = 1
+        else:
+            #print("Stop scan")
+            command[9] = 0
+
+    if(param == "power"):
+        reg = dbm_to_reg(value)
+        #            MAGIC                       type               size    TID    reserved payload      protocol            tx-msb-lsb  rx-msb-lsb     data[@      value] 
+        command = [  0x41, 0x42, 0x13, 0x56,     RFID_DIRECT,       0, 11,  0x00,  0x00,    0x00,0x07,   ST_COM_WRITE_REG,   0x00,0x02,  0x00,0x00,         0x15,   reg]
+
+    if(param == "sensi"):
+        command = [  0x41, 0x42, 0x13, 0x56,     RFID_DIRECT,       0, 10,  0x00,  0x00,    0x00,0x06,   CMD_CHANGE_FREQ,    0x00,0x01,  0x00,0x06,         SUBCMD_CHANGE_FREQ_GETLBT]
+        send_data(command)
+        cmd_answered = False
+        ans = None
+        while not cmd_answered:
+            ans = get_cmd()
+            if( ans != -1 and ans["type"] == RFID_DIRECT and ans["data"][4] == CMD_CHANGE_FREQ ):
+                cmd_answered = True
+        
+        command = [  0x41, 0x42, 0x13, 0x56,     RFID_DIRECT,       0, 16,  0x00,  0x00,    0x00,12,   CMD_CHANGE_FREQ,    0x00,0x07,  0x00,0x00,         SUBCMD_CHANGE_FREQ_SETLBT]
+
+        # convertion dbm [-80;-40] to register value [0;38] with -49=-48 and -70=-69
+        sensi = 0
+        if value >= -48:
+            sensi = 30 + (value + 48)
+        elif -69 <= value <= -49:
+            sensi = 10 + (value + 69) 
+        elif value <= -70:
+            sensi = value + 80
+        ans["data"][13] = sensi 
+        command.extend(ans["data"][9:])
+
+    if(param == "modulation"):
+        command = [  0x41, 0x42, 0x13, 0x56,     RFID_DIRECT,       0, 11,  0x00,  0x00,    0x00,0x07,   ST_COM_READ_REG,   0x00,0x02,  0x00,0x00,        0x01,  0x14]
+        send_data(command)
+        cmd_answered = False
+        ans = None
+        while not cmd_answered:
+            ans = get_cmd()
+            if( ans != -1 and ans["type"] == RFID_DIRECT and ans["data"][4] == ST_COM_READ_REG ):
+                cmd_answered = True
+
+        reg = ans["data"][9]
+        if(value == "pr-ask"):
+            reg |= 0x40
+        if(value == "ask"):
+            reg &= 0xBF
+        command = [  0x41, 0x42, 0x13, 0x56,     RFID_DIRECT,       0, 11,  0x00,  0x00,    0x00,0x07,   ST_COM_WRITE_REG,   0x00,0x02,  0x00,0x00,         0x14,   reg]
+        #hexcommand = ' '.join('0x%02x' % b for b in command)
+        #print(hexcommand)
+        
+    send_data(command)
+    time.sleep(0.5)
+
+def timestampMS():
+        return int((datetime.datetime.utcnow() - datetime.datetime(1970, 1, 1)).total_seconds() * 1000)
+
+# Start a test with the specified parameters
+def start_test(params):
+    motor_speed(params["speed"])
+    rfid_set("power", params["power"])
+    rfid_set("sensi", params["rssi"])
+    rfid_set("modulation", params["modulation"])
+    result = []
+
+    for rep in range(params["repetition"]):
+        result.append(["Repetition",rep+1])
+        rfid_set("scan", True)
+        #wait to make sure we get data straight away
+        #time.sleep(0.5)
+        
+        #start timer
+        start_time = timestampMS()
+        elapsed_time = timestampMS() - start_time
+        timestamp_first = 0
+
+        while(elapsed_time < params["duration"]*1000):
+                elapsed_time = timestampMS() - start_time
+                #print("Elapsed time: {} sec".format(elapsed_time))
+                # retrieve scan informations
+                cmd = get_cmd()
+                #print("type:{} sub-type:{} INFO_RFID:{} CMD_TAG_DETECTED:{}".format(cmd["type"], cmd["data"][0], INFO_RFID, CMD_TAG_DETECTED))
+                if( cmd!= -1 and (cmd["type"] == INFO_RFID) and (cmd["data"][0] == CMD_TAG_DETECTED)):
+                    timestamp = 0
+                    for i,value in enumerate(cmd["data"][1:8]):
+                        #print("value[{}]: {}".format(i, hex(value)))
+                        timestamp = timestamp | (value << (i*8)) & 0xFFFFFFFFFFFFFFFF
+                    tag = (cmd["data"][9] | cmd["data"][10] << 8) & 0xFFFF
+                    
+                    if timestamp_first == 0:
+                        timestamp_first = timestamp
+
+                    timestamp -= timestamp_first
+
+                    result.append([timestamp ,tag])
+                    #print("Timestamp:{} tag:{}".format(timestamp, tag))
+                        
+
+        #stop scan
+        rfid_set("scan", False)
+        result.append(["",""])
+        time.sleep(1)
+        
+        #purge previous scan
+        while(get_cmd() != -1):
+            pass
+
+    # maybe reset to default state ?
+    
+    return result
+
+def save_tmp(result, testlist):
+#    print("save result")
+    # create the file if it doesn't exist and append it if it does
+    headerParams = CSVIN_HEADER[:-1].split(CSV_DELIMITER)
+    col_max = len(headerParams)+1
+    with open("{}/tmp_{}.csv".format(TMP_DIR,testlist["testnum"]), 'w+') as resFile:
+        writer = csv.writer(resFile, delimiter=CSV_DELIMITER)
+        
+        testnumRow = ["Test #{}".format(testlist["testnum"])]
+        testnumRow.extend(['']*(col_max-len(testnumRow)))
+        writer.writerow(testnumRow)
+
+        headerRow = CSVIN_HEADER[:-1].split(CSV_DELIMITER)
+        headerRow.extend(['']*(col_max-len(headerRow)))
+        writer.writerow(headerRow)
+        
+        paramsRow = []
+        for strParam in HEADER_DICT.keys():
+            label = getShortParam(strParam)
+            paramsRow += [testlist[label]]
+        paramsRow.extend(['']*(col_max-len(paramsRow)))
+        writer.writerow(paramsRow)
+
+        labelRow = ['timer(ms)', 'RFID detection']
+        labelRow.extend(['']*(col_max-len(labelRow)))
+        writer.writerow(labelRow)
+
+        #writer.writerow(["Test #{}".format(testlist["testnum"]),'','','','',''])
+        #header = CSVIN_HEADER[:-1].split(CSV_DELIMITER)
+        #header.append('')
+        #writer.writerow(header)
+        #writer.writerow([testlist['speed'], testlist['duration'], testlist['repetition'], testlist['power'],'',''])
+        #writer.writerow(['timer(ms)', 'RFID detection','','','',''])
+
+        for row in result:
+            row.extend(['']*(col_max-len(row)))
+            writer.writerow(row)
+        resFile.close() 
+
+def clear_tmp_file():
+    if Path(TMP_DIR).is_dir():
+        shutil.rmtree(TMP_DIR)
+    os.makedirs(TMP_DIR)
+
+def combine_tmp_file(csvOut):
+    path, dirs, files = next(os.walk(TMP_DIR))
+    file_count = len(files)
+    file_data = []
+    prepend_col = 0
+
+    for filenum in range(file_count):
+        file_path = "{}/tmp_{}.csv".format(TMP_DIR,filenum+1)
+
+        with open(file_path) as f:
+            rd = csv.reader(f)
+            for num, row in enumerate(rd):
+                try:
+                    file_data[num][0] += row[0]
+                except IndexError:
+                    row[0] = prepend_col*CSV_DELIMITER + row[0]
+                    file_data.append(row)
+
+        prepend_col += len(HEADER_DICT.keys())+1
+
+    with open(csvOut,'w+') as resfile:
+        wr = csv.writer(resfile)
+        for row in file_data:
+            wr.writerow(row)
+
+
+# Helper function to output an exemple csv input file with the correct format
+def create_exemple():
+    with open(CSV_EXEMPLE_FILE, 'w') as exempleFile:
+        exempleFile.write(CSVIN_HEADER)
+        exempleFile.write(CSVIN_EXEMPLE)
+        exempleFile.close()
+
+#------------------- Entry point --------------------#
+if len(sys.argv) != 3:
+    print("Wrong number of arguments")
+    print("Usage: {} <test-file-path>.csv <path-result-path>.csv".format(sys.argv[0]))
+    exit()
+
+csvIn = sys.argv[1]
+csvOut = sys.argv[2]
+
+# test if the CSV in file exist
+csvInFile = Path(csvIn)
+if not csvInFile.is_file():
+    print("Error: {} specified doesn't exist".format(csvIn))
+    exit()
+
+# test if the CSV in file is a CSV and is the correct version with (header)
+if not csvIn.endswith('.csv'):
+    print("Error: {} is not a CSV file make sure the file ends with '.csv'".format(csvIn))
+    exit()
+
+with open(csvIn, 'r') as csvInFile:
+    # check header parameter match the expected format
+    if csvInFile.readline() != CSVIN_HEADER:
+        print("Error: The file {} doesn't match the expected format (checkout the file {})".format(csvIn, CSV_EXEMPLE_FILE))
+        create_exemple()
+        exit()
+
+    # check the delimiter match the expected delimiter
+    csvInFile.seek(0)
+    dialect = csv.Sniffer().sniff(csvInFile.read(1024))
+    if dialect.delimiter != CSV_DELIMITER:
+        print("Error: the CSV row delimiter doesn't match the expected delimiter '{}' (checkout the file {})".format(CSV_DELIMITER, CSV_EXEMPLE_FILE))
+        create_exemple()
+        exit()
+
+    csvInFile.close()
+
+# test if the CSV out file path specified exist
+csvOutPath = os.path.dirname(os.path.abspath(csvOut))
+if not Path(csvOutPath).is_dir():
+    print("Error: the output file can't be created because {} is not a valid path".format(csvOutPath))
+    exit()
+
+# test if the CSV out file doesn't exist (if so ask authorisation to overwrite) 
+if Path(csvOut).is_file():
+    print("Warning: {} already exist do you want to overwrite it? (Yes/n)".format(csvOut))
+    answ = input()
+    if answ != "Yes":
+        csvOut = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d_%H:%M:%S_result.csv')
+        print("The output file will be saved as {}".format(csvOut))
+    else:
+        print("The file will be overwritten")
+        # truncate the file
+        with open(csvOut, "w") as f:
+            f.close
+
+try:
+    testlist = csv_parser(csvIn)
+    connect(HOST, PORT)
+    clear_tmp_file()
+
+    for test in testlist:
+        if(test["duration"] == 0):
+            print("Skiping test {}/{}".format(test["testnum"],len(testlist)))
+            continue
+        print("Starting test {}/{} ... ".format(test["testnum"],len(testlist)), end='', flush=True)
+        result = start_test(test)
+        print("Done",end='',flush=True)
+        save_tmp(result, test)
+        print(" - Saved")
+    
+    motor_speed(0)
+    combine_tmp_file(csvOut)
+    disconnect()
+
+except KeyboardInterrupt:
+    motor_speed(0)
+    disconnect()

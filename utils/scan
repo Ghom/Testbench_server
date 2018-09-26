@@ -1,0 +1,72 @@
+#!/usr/bin/python3
+import socket
+import sys
+import time
+import atexit
+
+def exit_handler():
+    client.send(command_rfid_off)
+    if (n != len(command_rfid_off)):
+        print ('Erreur envoi.')
+    else:
+        print ('Envoi ok.')
+
+    time.sleep(0.5)
+    client.close()
+    print('Exit application: stop RFID scan and close connection')
+
+HOST = '127.0.0.1'
+PORT = 12345
+
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client.connect((HOST, PORT))
+print ('Connexion vers ' + HOST + ':' + str(PORT) + ' reussie.')
+
+#                           MAGIC                       type    size        type    argc    arg[...]
+command_rfid_on =  bytes([  0x41, 0x42, 0x13, 0x56,     0,      0, 3,       0x17,   1,      1])
+command_rfid_off = bytes([  0x41, 0x42, 0x13, 0x56,     0,      0, 3,       0x17,   1,      0])
+
+n = client.send(command_rfid_on)
+if (n != len(command_rfid_on)):
+    print ('Erreur envoi.')
+else:
+    print ('Envoi ok.')
+
+atexit.register(exit_handler)
+time.sleep(0.5)
+
+magic=0
+i=0
+magic_detected=False
+frame=[]
+
+while(True):
+    data = client.recv(1024)
+
+    for byte in data:
+        value = int(byte)
+        #print('value:{}'.format(hex(byte)))
+        magic = ((magic>>8) | value<<24) & 0xFFFFFFFF
+        #print('magic is {}'.format(hex(magic)))
+        if(magic == 0x41421356):
+            magic_detected=True
+            continue
+        
+        if(magic_detected):
+            frame.append(hex(byte))
+
+        if(len(frame) == 7):
+            #print(frame)
+            if(frame[3] == hex(0x16)):
+                if(frame[6] != hex(0x00)):
+                    print('|',end='',flush=True)
+                    #print('Tag detected:',frame[6])
+            #else:
+                #print('wrong frame type')
+        
+            magic_detected = False
+            frame = []
+
+
+
+

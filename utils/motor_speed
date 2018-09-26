@@ -1,0 +1,48 @@
+#!/usr/bin/python3
+import socket
+import sys
+import time
+
+if len(sys.argv) != 2:
+    print('vous pouvez repeter la question?')
+    exit()
+
+
+speed = 0
+clockwise = 1
+
+try:
+    speed = int(sys.argv[1])
+except ValueError:
+    print("Error: argument speed is not a number")
+    exit()
+
+#if(-1024 > speed or speed > 1024):
+#    print('Error: the speed value has to be in range [-1024;1024]')
+#    exit()
+
+HOST = '127.0.0.1'
+PORT = 12345
+
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client.connect((HOST, PORT))
+print ('Connexion vers ' + HOST + ':' + str(PORT) + ' reussie.')
+
+if(speed<0):
+    speed = abs(speed)
+    clockwise = 0
+
+#                       MAGIC                       type    size        type    argc    arg[...]
+command_motor = bytes([ 0x41, 0x42, 0x13, 0x56,     1,      0, 5,       0,      3,      speed>>8, speed&0xFF, clockwise])
+
+n = client.send(command_motor)
+if (n != len(command_motor)):
+    print ('Erreur envoi.')
+else:
+    print ('Envoi ok.')
+
+
+time.sleep(0.5)
+
+print ('Deconnexion.')
+client.close()
