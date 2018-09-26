@@ -1,2 +1,2 @@
-Motor Speed(rpm);Measure Time(sec);Measure Rep;RFID Power(dbm);Modulation;RssiThreshold(dbm);
-100;10;1;4;pr-ask;-40;
+Motor Speed(rpm);Measure Time(sec);Measure Rep;RFID Power(dbm);Modulation;RssiThreshold(dbm);scan dutycycle;
+100;10;1;4;pr-ask;-40;15;

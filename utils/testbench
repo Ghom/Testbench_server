@@ -17,6 +17,7 @@ HEADER_DICT["Measure Rep"]         = ["repetition", 1]
 HEADER_DICT["RFID Power(dbm)"]     = ["power", 13]
 HEADER_DICT["Modulation"]          = ["modulation", "pr-ask"]
 HEADER_DICT["RssiThreshold(dbm)"]  = ["rssi", -40]
+HEADER_DICT["scan dutycycle"]      = ["dutycycle", 20]
 
 CSV_DELIMITER = ';'
 CSVIN_HEADER = CSV_DELIMITER.join(list(HEADER_DICT.keys())+['\n'])
@@ -39,14 +40,15 @@ RFID_DIRECT = 0x04
 #typedef enum {CMD_CHANGE_SPEED=0, CMD_GET_SPEED, CMD_SIGNAL_STABLE_SPEED} motor_cmd_type_t;
 CMD_SIGNAL_STABLE_SPEED = 0x02
 
-
 ST_COM_WRITE_REG = 0x68
 ST_COM_READ_REG = 0x69
-CMD_TAG_DETECTED = 0x16
 
 CMD_CHANGE_FREQ = 0x02
 SUBCMD_CHANGE_FREQ_SETLBT = 0x07
 SUBCMD_CHANGE_FREQ_GETLBT = 0x08
+
+CMD_TAG_DETECTED = 0x16
+COM_SET_DUTYCYCLE = 0x18
 
 def getShortParam(longParamStr):
     return HEADER_DICT[longParamStr][0]
@@ -104,6 +106,13 @@ def csv_parser(csvPath):
                     skiped += 1
                     continue
                 d['rssi'] = rssi
+
+                dc = int(row[paramlist[6]])
+                if not (10 <= dc <= 20):
+                    print("Warning: {}:{} the field '{}' need to be in range [10:20] ({}) -- skip test".format(csvPath, line, paramlist[6], int(row[paramlist[6]])))
+                    skiped += 1
+                    continue
+                d['dutycycle'] = dc
 
                 testlist.append(d)
             except ValueError:
@@ -300,7 +309,10 @@ def rfid_set(param, value):
         command = [  0x41, 0x42, 0x13, 0x56,     RFID_DIRECT,       0, 11,  0x00,  0x00,    0x00,0x07,   ST_COM_WRITE_REG,   0x00,0x02,  0x00,0x00,         0x14,   reg]
         #hexcommand = ' '.join('0x%02x' % b for b in command)
         #print(hexcommand)
-        
+       
+    if(param == "dutycycle"):
+        command = [  0x41,0x42,0x13,0x56,RFID_DIRECT,0,10,    0x00,0x00,0x00,0x06, COM_SET_DUTYCYCLE,0x00,0x01,0x00,0x00, value]
+
     send_data(command)
     time.sleep(0.5)
 
@@ -313,6 +325,7 @@ def start_test(params):
     rfid_set("power", params["power"])
     rfid_set("sensi", params["rssi"])
     rfid_set("modulation", params["modulation"])
+    rfid_set("dutycycle", params["dutycycle"])
     result = []
 
     for rep in range(params["repetition"]):
