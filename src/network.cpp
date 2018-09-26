@@ -49,7 +49,8 @@ void Network::Init()
 	}
 
 	memset(&sin, 0, sizeof(sin));
-	sin.sin_addr.s_addr = inet_addr("127.0.0.1");   
+	sin.sin_addr.s_addr = inet_addr("127.0.0.1");
+	//sin.sin_addr.s_addr = inet_addr("192.168.1.20"); 
 	sin.sin_family = AF_INET;
 	sin.sin_port = htons(m_tcp_port);
 
@@ -169,8 +170,11 @@ void Network::threadWaitClient()
 				continue;
 			}
 
-			memcpy(buf, &motor_packet, size);
+			uint32_t magic = 0x41421356;
+			memcpy(buf, &magic, 4);
+			memcpy(buf+4, &motor_packet, size-4);
 			m_data_out.Write(buf, size);
+			sem_post(&m_sem_unlockWriteThread); // free the semaphore so the write thread can process
 			free(buf);
 		}
 	}
@@ -345,6 +349,7 @@ void Network::dispatch(packet_t command)
         switch(command.type)
         {
                 case CMD_RFID:
+                case RFID_DIRECT:
                 	printf("CMD_RFID\n");
                 	m_RFID_fifo_in->Write(command);
                 	break;

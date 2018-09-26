@@ -24,6 +24,10 @@ thread_event wait_for_signal(thread_signal_t* sigHandler, unsigned long event_fl
 	{
 		event_flags |= TIME_OUT;
 	}
+	else
+	{
+		event_flags &= ~TIME_OUT;
+	}
 
 	while((sigHandler->event_flag & event_flags) == 0)
 	{
@@ -34,7 +38,9 @@ thread_event wait_for_signal(thread_signal_t* sigHandler, unsigned long event_fl
 		else
 		{
 			clock_gettime(CLOCK_REALTIME, &ts);
-			ts.tv_sec += waittime;
+			// waittime is in ms
+			ts.tv_sec += waittime/1000;
+			ts.tv_nsec += (waittime%1000)*1000*1000;
 			if(pthread_cond_timedwait(&(sigHandler->event), &(sigHandler->lock), &ts) == ETIMEDOUT)
 				sigHandler->event_flag |= TIME_OUT;
 		}
@@ -492,6 +498,7 @@ long CSerialCommHelper::Read_Upto	(std::string& data,char chTerminator ,long alC
 				
 				if  ( event == TIME_OUT) 
 				{
+					reset_signal(&m_signalThread, TIME_OUT);
 					DEBUG("CSerialCommHelper: Read_Upto () timed out in blocking read");
 					data.erase ();
 					hr = E_FAIL;
@@ -562,6 +569,7 @@ long CSerialCommHelper::Read_N(std::string& data,long alCount,long  alTimeOut )
 				
 				if  ( event == TIME_OUT) 
 				{
+					reset_signal(&m_signalThread, TIME_OUT);
 					DEBUG("CSerialCommHelper: Read_N (%ld) timed out in blocking read",alCount);
 					data.erase ();
 					hr = E_FAIL;

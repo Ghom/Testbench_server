@@ -15,7 +15,13 @@ typedef struct rfid_cmd_t
 	uint32_t args[20];
 }rfid_cmd;
 
-typedef enum  {RFID_DISCONECTED=0, RFID_IDLE, RFID_SCANNING, RFID_ERROR} rfid_state_t;
+typedef struct __attribute__ ((packed)) rfid_scan_t
+{
+	uint64_t timestamp;
+	uint16_t tagCount;
+}rfid_scan;
+
+typedef enum  {RFID_DISCONECTED=0, RFID_IDLE, RFID_SCANNING, RFID_STOPSCANN, RFID_ERROR} rfid_state_t;
 
 class RFID
 {
@@ -29,6 +35,7 @@ public:
 private:
 	void threadWorker(void);
 	void threadScan(void);
+	void encapsulate(uint8_t type, uint16_t size, uint8_t* data);
 	void decapsulate(packet_t &command, rfid_cmd_t &rfid_cmd);
 	void execute(rfid_cmd_t &cmd);
 

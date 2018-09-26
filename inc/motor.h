@@ -6,7 +6,7 @@
 
 #include "network.h"
 
-typedef enum {CMD_CHANGE_SPEED=0, CMD_GET_SPEED} motor_cmd_type_t;
+typedef enum {CMD_CHANGE_SPEED=0, CMD_GET_SPEED, CMD_SIGNAL_STABLE_SPEED} motor_cmd_type_t;
 
 typedef struct motor_cmd_t
 {
@@ -29,7 +29,9 @@ public:
 private:
 	void threadWorker(void);
 	void threadSpeedMonitor(void);
+	void stop(void);
 	void decapsulate(packet_t &command, motor_cmd_t &motor_cmd);
+	void signalStable(void);
 	void execute(motor_cmd_t &cmd);
 	void direction(bool clockwise);
 	void speed(uint32_t speed);

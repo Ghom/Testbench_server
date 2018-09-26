@@ -11,7 +11,7 @@
 
 #define MAX_DATA_LEN 100
 
-typedef enum {CMD_RFID=0, CMD_MOTOR, INFO_RFID, INFO_MOTOR} packet_type;
+typedef enum {CMD_RFID=0, CMD_MOTOR, INFO_RFID, INFO_MOTOR, RFID_DIRECT} packet_type;
 
 typedef struct __attribute__ ((packed)) packet_t
 {
