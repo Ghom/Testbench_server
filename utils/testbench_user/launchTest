@@ -329,7 +329,7 @@ def start_test(params):
     result = []
 
     for rep in range(params["repetition"]):
-        result.append(["Repetition",rep+1])
+        #result.append(["Repetition",rep+1])
         rfid_set("scan", True)
         #wait to make sure we get data straight away
         #time.sleep(0.5)
@@ -408,9 +408,30 @@ def save_tmp(result, testlist):
         #writer.writerow([testlist['speed'], testlist['duration'], testlist['repetition'], testlist['power'],'',''])
         #writer.writerow(['timer(ms)', 'RFID detection','','','',''])
 
+        prev = 1
+        filtered = 0
+        prev_time = 0
+        diff_array = []
+        mean = 0
+        for row in result:
+            if(prev == 0 and row[1] != 0 and row[0] != ''):
+                filtered = 1
+                diff_array.append(row[0] - prev_time)
+                mean += diff_array[-1]
+                prev_time = row[0]
+            else:
+                filtered = 0
+            row.extend([filtered])
+            prev = row[1]
+        
+        if(len(diff_array)):
+            mean = mean/len(diff_array)
+        result[0].extend(["mean_diff",mean])
+
         for row in result:
             row.extend(['']*(col_max-len(row)))
             writer.writerow(row)
+
         resFile.close() 
 
 def clear_tmp_file():
