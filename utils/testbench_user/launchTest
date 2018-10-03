@@ -520,7 +520,7 @@ if Path(csvOut).is_file():
     print("Warning: {} already exist do you want to overwrite it? (Yes/n)".format(csvOut))
     answ = input()
     if answ != "Yes":
-        csvOut = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d_%H:%M:%S_result.csv')
+        csvOut = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d_%Hh%Mm%S_result.csv')
         print("The output file will be saved as {}".format(csvOut))
     else:
         print("The file will be overwritten")
